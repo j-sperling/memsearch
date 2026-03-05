@@ -17,7 +17,6 @@ class Turn:
     role: str  # "user" or "assistant"
     content: str  # rendered text content
     tool_calls: list[str] = field(default_factory=list)  # ["Bash(command=ls)", ...]
-    line_index: int = 0  # line number in JSONL file
 
 
 def parse_transcript(path: str | Path) -> list[Turn]:
@@ -33,13 +32,12 @@ def parse_transcript(path: str | Path) -> list[Turn]:
 
     entries: list[dict[str, Any]] = []
     with open(path, encoding="utf-8") as f:
-        for i, line in enumerate(f):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
-                obj["_line_index"] = i
                 entries.append(obj)
             except json.JSONDecodeError:
                 continue
@@ -74,7 +72,6 @@ def parse_transcript(path: str | Path) -> list[Turn]:
                     timestamp=entry.get("timestamp", ""),
                     role="user",
                     content=clean,
-                    line_index=entry.get("_line_index", 0),
                 )
 
         elif entry_type == "assistant" and current_turn is not None:
