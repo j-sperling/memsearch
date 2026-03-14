@@ -138,7 +138,7 @@ if [[ "$MILVUS_URI" != http* ]] && [[ "$MILVUS_URI" != tcp* ]]; then
       $MEMSEARCH_CMD reset "${_reset_args[@]}" 2>/dev/null || true
       $MEMSEARCH_CMD index "${_index_args[@]}" 2>/dev/null || true
     fi
-  ) &
+  ) >/dev/null 2>&1 &
   echo $! > "$INDEX_PIDFILE"
 fi
 
