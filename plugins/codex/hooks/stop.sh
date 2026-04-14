@@ -100,7 +100,7 @@ Here is the transcript:
 ${CONTENT}"
 
     if command -v timeout &>/dev/null; then
-      SUMMARY=$(MEMSEARCH_NO_WATCH=1 timeout 30 codex exec \
+      SUMMARY=$(MEMSEARCH_NO_WATCH=1 MEMSEARCH_IN_STOP_WORKER=1 timeout 30 codex exec \
         --ephemeral \
         --skip-git-repo-check \
         -s read-only \
@@ -109,7 +109,7 @@ ${CONTENT}"
         -m gpt-5.1-codex-mini \
         "$LLM_PROMPT" 2>/dev/null || true)
     else
-      SUMMARY=$(MEMSEARCH_NO_WATCH=1 codex exec \
+      SUMMARY=$(MEMSEARCH_NO_WATCH=1 MEMSEARCH_IN_STOP_WORKER=1 codex exec \
         --ephemeral \
         --skip-git-repo-check \
         -s read-only \
@@ -165,6 +165,15 @@ fi
 
 source "$SCRIPT_DIR/common.sh"
 
+# Defense-in-depth against recursion: the worker's `codex exec` passes
+# `features.codex_hooks=false`, but if a future build ignores that flag the
+# nested Stop hook would spawn another worker. MEMSEARCH_IN_STOP_WORKER is
+# exported across the exec boundary so the nested invocation no-ops here.
+if [ -n "${MEMSEARCH_IN_STOP_WORKER:-}" ]; then
+  echo '{}'
+  exit 0
+fi
+
 # Prevent infinite loop: if this Stop was triggered by a previous Stop hook, bail out
 STOP_HOOK_ACTIVE=$(_json_val "$INPUT" "stop_hook_active" "false")
 if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
@@ -204,6 +213,12 @@ fi
 
 # Extract user question and last assistant message before going async
 LAST_MSG=$(_json_val "$INPUT" "last_assistant_message" "")
+# Cap before it flows into sys.argv of the work-file Python payload.
+# Unbounded transcripts risk ARG_MAX overflow on execve; the worker only
+# ever uses the first 800 chars of LAST_MSG as a fallback summary anyway.
+if [ ${#LAST_MSG} -gt 4000 ]; then
+  LAST_MSG="${LAST_MSG:0:4000}...(truncated)"
+fi
 USER_QUESTION=""
 PARSED=""
 
