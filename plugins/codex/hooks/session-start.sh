@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SessionStart hook: clean up orphans, start watch singleton, inject recent memory context.
-# Codex-specific: handles "source" field (startup/resume/clear), no SessionEnd counterpart.
+# Codex-specific: no SessionEnd counterpart.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -8,11 +8,8 @@ source "$SCRIPT_DIR/common.sh"
 # Clean up orphaned processes from previous sessions (no SessionEnd in Codex)
 cleanup_orphaned_processes
 
-# Extract session source (startup/resume/clear) — Codex-specific field
-SESSION_SOURCE=$(_json_val "$INPUT" "source" "startup")
-
 # Bootstrap: if memsearch not available, install uv and warm up uvx cache
-if [ -z "$MEMSEARCH_CMD" ]; then
+if ! memsearch_available; then
   if ! command -v uvx &>/dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null
     export PATH="$HOME/.local/bin:$PATH"
@@ -23,20 +20,20 @@ if [ -z "$MEMSEARCH_CMD" ]; then
 fi
 
 # First-time setup: if no config file exists, default to onnx provider.
-if [ -n "$MEMSEARCH_CMD" ]; then
+if memsearch_available; then
   if [ ! -f "$HOME/.memsearch/config.toml" ] && [ ! -f "${PROJECT_DIR}/.memsearch.toml" ]; then
-    $MEMSEARCH_CMD config set embedding.provider onnx 2>/dev/null || true
+    _memsearch config set embedding.provider onnx 2>/dev/null || true
   fi
 fi
 
 # Read resolved config and version for status display
 PROVIDER="onnx"; MODEL=""; MILVUS_URI=""; VERSION=""
-if [ -n "$MEMSEARCH_CMD" ]; then
-  PROVIDER=$($MEMSEARCH_CMD config get embedding.provider 2>/dev/null || echo "onnx")
-  MODEL=$($MEMSEARCH_CMD config get embedding.model 2>/dev/null || echo "")
-  MILVUS_URI=$($MEMSEARCH_CMD config get milvus.uri 2>/dev/null || echo "")
+if memsearch_available; then
+  PROVIDER=$(_memsearch config get embedding.provider 2>/dev/null || echo "onnx")
+  MODEL=$(_memsearch config get embedding.model 2>/dev/null || echo "")
+  MILVUS_URI=$(_memsearch config get milvus.uri 2>/dev/null || echo "")
   # "memsearch, version 0.1.10" → "0.1.10"
-  VERSION=$($MEMSEARCH_CMD --version 2>/dev/null | sed 's/.*version //' || echo "")
+  VERSION=$(_memsearch --version 2>/dev/null | sed 's/.*version //' || echo "")
 fi
 
 # Determine required API key for the configured provider
@@ -54,8 +51,8 @@ KEY_MISSING=false
 if [ -n "$REQUIRED_KEY" ] && [ -z "${!REQUIRED_KEY:-}" ]; then
   # Env var not set — check if API key is configured in memsearch config file
   CONFIG_API_KEY=""
-  if [ -n "$MEMSEARCH_CMD" ]; then
-    CONFIG_API_KEY=$($MEMSEARCH_CMD config get embedding.api_key 2>/dev/null || echo "")
+  if memsearch_available; then
+    CONFIG_API_KEY=$(_memsearch config get embedding.api_key 2>/dev/null || echo "")
   fi
   if [ -z "$CONFIG_API_KEY" ]; then
     KEY_MISSING=true
@@ -69,7 +66,7 @@ if [ -n "$VERSION" ]; then
   LATEST=$(_json_val "$_PYPI_JSON" "info.version" "")
   if [ -n "$LATEST" ] && [ "$LATEST" != "$VERSION" ]; then
     # Detect install method to suggest the right upgrade command
-    if [[ "$MEMSEARCH_CMD" == *"uvx"* ]]; then
+    if [ "${MEMSEARCH_CMD[0]:-}" = "uvx" ]; then
       UPGRADE_CMD="uvx --upgrade --from 'memsearch[onnx]' memsearch --version"
     else
       _MS_PATH=$(command -v memsearch 2>/dev/null || true)
@@ -102,6 +99,10 @@ fi
 PROJECT_BASENAME=$(basename "$PROJECT_DIR")
 COLLECTION_DESC="${PROJECT_BASENAME} | ${PROVIDER}/${MODEL:-default}"
 
+# Capture preexisting memory files before writing the new session heading.
+EXISTING_MEMORY_FILES=$(find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort || true)
+EXISTING_MEMORY_COUNT=$(printf '%s\n' "$EXISTING_MEMORY_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
+
 # Write session heading to today's memory file
 ensure_memory_dir
 TODAY=$(date +%Y-%m-%d)
@@ -129,12 +130,12 @@ if [[ "$MILVUS_URI" != http* ]] && [[ "$MILVUS_URI" != tcp* ]]; then
     _index_args=("$MEMORY_DIR")
     [ -n "$COLLECTION_NAME" ] && _index_args+=(--collection "$COLLECTION_NAME")
     [ -n "$COLLECTION_DESC" ] && _index_args+=(--description "$COLLECTION_DESC")
-    INDEX_OUTPUT=$($MEMSEARCH_CMD index "${_index_args[@]}" 2>&1) || true
+    INDEX_OUTPUT=$(_memsearch index "${_index_args[@]}" 2>&1) || true
     if echo "$INDEX_OUTPUT" | grep -q "dimension mismatch"; then
       _reset_args=(--yes)
       [ -n "$COLLECTION_NAME" ] && _reset_args+=(--collection "$COLLECTION_NAME")
-      $MEMSEARCH_CMD reset "${_reset_args[@]}" 2>/dev/null || true
-      $MEMSEARCH_CMD index "${_index_args[@]}" 2>/dev/null || true
+      _memsearch reset "${_reset_args[@]}" 2>/dev/null || true
+      _memsearch index "${_index_args[@]}" 2>/dev/null || true
     fi
   ) >/dev/null 2>&1 &
   echo $! > "$INDEX_PIDFILE"
@@ -151,13 +152,14 @@ fi
 
 context=""
 
-# Count memory entries for the hint
-memory_count=$(ls -1 "$MEMORY_DIR"/*.md 2>/dev/null | wc -l)
-if [ "$memory_count" -gt 0 ]; then
-  # Get date range of memory files
-  oldest=$(ls -1 "$MEMORY_DIR"/*.md 2>/dev/null | sort | head -1 | xargs basename .md 2>/dev/null | sed 's/\.md//')
-  newest=$(ls -1 "$MEMORY_DIR"/*.md 2>/dev/null | sort -r | head -1 | xargs basename .md 2>/dev/null | sed 's/\.md//')
-  context="You have ${memory_count} past memory file(s) (${oldest} to ${newest}). Use \$memory-recall to search when the user's question could benefit from historical context."
+# Count only preexisting memory entries for the hint.
+# Do not treat the just-created session heading as past memory.
+if [ "$EXISTING_MEMORY_COUNT" -gt 0 ]; then
+  oldest_path=$(printf '%s\n' "$EXISTING_MEMORY_FILES" | sed -n '1p')
+  newest_path=$(printf '%s\n' "$EXISTING_MEMORY_FILES" | tail -1)
+  oldest=$(basename "$oldest_path" .md 2>/dev/null || true)
+  newest=$(basename "$newest_path" .md 2>/dev/null || true)
+  context="You have ${EXISTING_MEMORY_COUNT} past memory file(s) (${oldest} to ${newest}). Use \$memory-recall to search when the user's question could benefit from historical context."
 fi
 
 if [ -n "$context" ]; then

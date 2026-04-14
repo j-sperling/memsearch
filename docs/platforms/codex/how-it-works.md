@@ -16,9 +16,9 @@ The Codex plugin uses 3 shell hooks (Codex does not have a `SessionEnd` hook):
 
 | Hook | Type | Async | Timeout | What It Does |
 |------|------|-------|---------|-------------|
-| **SessionStart** | command | no | 10s | Cleanup orphans, bootstrap memsearch, start watch/index, write session heading, inject memories, display status |
-| **UserPromptSubmit** | command | no | 15s | Return `systemMessage` hint "[memsearch] Memory available" |
-| **Stop** | command | **yes** | 120s | Parse rollout, summarize via `codex exec`, append to daily `.md`, re-index (Server only) |
+| **SessionStart** | command | no | 30s | Cleanup orphans, bootstrap memsearch, start watch/index, write session heading, inject memories, display status |
+| **UserPromptSubmit** | command | no | 10s | Return `systemMessage` hint "[memsearch] Memory available" |
+| **Stop** | command | **yes** | 30s | Summarize the last turn via `codex exec`, using a rollout transcript when available and `history.jsonl` + `last_assistant_message` otherwise |
 
 ### Hook Lifecycle
 
@@ -93,11 +93,12 @@ graph TD
     B -->|"stop_hook_active=true"| Z[Skip — return empty JSON]
     B -->|First call| C{API key available?}
     C -->|No| Z
-    C -->|Yes| D[Validate rollout file]
-    D -->|"< 3 lines"| Z
-    D -->|Valid| E["parse-rollout.sh<br/>Extract last turn"]
+    C -->|Yes| D{transcript_path available?}
+    D -->|Yes| E["parse-rollout.sh<br/>Extract last turn"]
+    D -->|No| E2["history.jsonl + last_assistant_message<br/>Recover latest user turn"]
     E --> F{"codex exec available?"}
-    F -->|Yes| G["codex exec --ephemeral<br/>-s read-only -m gpt-5.1-codex-mini<br/>(isolated CODEX_HOME)"]
+    E2 --> F
+    F -->|Yes| G["codex exec --ephemeral<br/>-s read-only -c features.codex_hooks=false<br/>-m gpt-5.1-codex-mini"]
     F -->|No| H["Local fallback<br/>Truncate raw text"]
     G --> I["Append to YYYY-MM-DD.md<br/>with rollout anchors"]
     H --> I
@@ -106,22 +107,30 @@ graph TD
     J -->|No (Lite)| L[Skip re-index]
 ```
 
+### Payload Compatibility
+
+Current Codex builds do **not** reliably provide `transcript_path` in the Stop hook payload. On current CLI builds the hook receives `session_id`, `turn_id`, `cwd`, `model`, `permission_mode`, `stop_hook_active`, and `last_assistant_message`, while `transcript_path` may be `null`.
+
+The plugin handles both cases:
+
+- If `transcript_path` exists, it parses the rollout with `parse-rollout.sh` and keeps the richer rollout anchor for L3 drill-down.
+- If `transcript_path` is missing, it falls back to the latest matching user prompt in `~/.codex/history.jsonl` plus `last_assistant_message`.
+
+This keeps memory capture working on current Codex releases, but rollout drill-down is now **best-effort** rather than guaranteed.
+
 ### Codex exec Isolation
 
-The Stop hook calls `codex exec` for LLM summarization. To prevent **hook recursion** (the summarization call triggering another Stop hook), it uses an isolated `CODEX_HOME`:
+The Stop hook calls `codex exec` for LLM summarization. To prevent **hook recursion** (the summarization call triggering another Stop hook), it disables hooks in the child process:
 
 ```bash
-CODEX_ISOLATED="/tmp/codex-no-hooks"
-mkdir -p "$CODEX_ISOLATED"
-# Symlink auth.json for API access, but NO hooks.json → no hooks trigger
-ln -sf "$HOME/.codex/auth.json" "$CODEX_ISOLATED/auth.json"
-
-CODEX_HOME="$CODEX_ISOLATED" MEMSEARCH_NO_WATCH=1 \
+MEMSEARCH_NO_WATCH=1 \
   codex exec --ephemeral --skip-git-repo-check -s read-only \
+  -c features.codex_hooks=false \
+  -c model_reasoning_effort='"low"' \
   -m gpt-5.1-codex-mini "$LLM_PROMPT"
 ```
 
-The isolated `CODEX_HOME` contains only `auth.json` (for API authentication) -- no `hooks.json` means no hooks fire in the child process. The `--ephemeral` flag prevents session state pollution.
+This avoids assuming `~/.codex/auth.json` exists. Installations that authenticate through Codex's default keyring flow still work, and the child `codex exec` cannot recurse because hooks are disabled explicitly.
 
 ### Local Fallback
 
@@ -133,40 +142,59 @@ SUMMARY="- User asked: ${USER_QUESTION}
 - Codex: ${TRUNCATED_MSG}"
 ```
 
-This ensures memory capture works even when the summarization model is unavailable.
+This ensures memory capture works even when the summarization model is unavailable or Codex omits the rollout transcript path.
 
 ---
 
 ## hooks.json Format
 
-Codex CLI uses a `hooks.json` file (at `~/.codex/hooks.json`) to define hook scripts. The installer generates this file with a `matcher` field (required by Codex):
+Codex CLI uses a `hooks.json` file (at `~/.codex/hooks.json`) to define hook scripts. The installer updates the nested `hooks` object, replacing only older memsearch Codex entries and preserving unrelated hooks:
 
 ```json
-[
-  {
-    "event": "SessionStart",
-    "command": "/path/to/plugins/codex/hooks/session-start.sh",
-    "matcher": ".*",
-    "timeout_ms": 10000
-  },
-  {
-    "event": "UserPromptSubmit",
-    "command": "/path/to/plugins/codex/hooks/user-prompt-submit.sh",
-    "matcher": ".*",
-    "timeout_ms": 15000
-  },
-  {
-    "event": "Stop",
-    "command": "/path/to/plugins/codex/hooks/stop.sh",
-    "matcher": ".*",
-    "timeout_ms": 120000,
-    "async": true
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /path/to/plugins/codex/hooks/session-start.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /path/to/plugins/codex/hooks/user-prompt-submit.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /path/to/plugins/codex/hooks/stop.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
   }
-]
+}
 ```
 
-!!! note "matcher field"
-    The `matcher` field is required by Codex CLI. Use `".*"` to match all events of the specified type.
+!!! note "Installer behavior"
+    The installer updates the nested `hooks` object in `~/.codex/hooks.json`, replacing only older memsearch Codex hook entries and preserving unrelated hooks.
 
 ---
 
@@ -210,7 +238,7 @@ your-project/.memsearch/memory/
 - Added regression test with emoji and CJK characters
 ```
 
-The `<!-- session:... rollout:... -->` anchors enable L3 drill-down: the memory-recall skill uses `parse-rollout.sh` to read the original Codex conversation when deeper context is needed.
+When the `rollout:` anchor is populated, the memory-recall skill can use `parse-rollout.sh` for L3 drill-down. On current Codex builds the Stop payload may omit `transcript_path`, so some memories keep only the `session:` anchor plus the summarized bullets.
 
 ---
 
@@ -220,11 +248,11 @@ The `<!-- session:... rollout:... -->` anchors enable L3 drill-down: the memory-
 |--------|-------------|-------------------|
 | **SessionEnd hook** | Not available -- orphans cleaned at next SessionStart | Available -- clean shutdown |
 | **Summarizer** | `codex exec -m gpt-5.1-codex-mini` | `claude -p --model haiku` |
-| **Recursion prevention** | Isolated `CODEX_HOME` (no hooks.json) | `stop_hook_active` flag + `CLAUDECODE=` |
+| **Recursion prevention** | `features.codex_hooks=false` on child `codex exec` | `stop_hook_active` flag + `CLAUDECODE=` |
 | **Skill context** | Main context (no `context: fork`) | Forked subagent (`context: fork`) |
 | **Milvus Lite** | One-time index + skip re-index in Stop | Same approach via `start_watch()` logic |
 | **Auto-install** | Bootstrap installs `uv` if missing | Requires pre-installed memsearch |
-| **hooks.json** | Generated by install.sh (requires `matcher`) | Part of plugin manifest |
+| **hooks.json** | Installer updates only memsearch Codex hook entries and preserves unrelated hooks | Part of plugin manifest |
 
 ---
 
@@ -250,8 +278,8 @@ plugins/codex/
 |------|---------|
 | `common.sh` | Shared library sourced by all hooks. Includes JSON helpers (`_json_val`, `_json_encode_str`), memsearch detection, watch/index singleton management, and `cleanup_orphaned_processes()` for Codex's missing SessionEnd. |
 | `session-start.sh` | Bootstrap memsearch, start watch (Server) or one-time index (Lite), write session heading, inject cold-start context, check for updates. |
-| `stop.sh` | Async capture: parse rollout, summarize via `codex exec` with isolated `CODEX_HOME`, append to daily `.md`, re-index (Server only). Falls back to raw text if `codex exec` fails. |
+| `stop.sh` | Async capture: summarize via `codex exec` with hooks disabled, using `parse-rollout.sh` when Codex provides a rollout path and `history.jsonl` + `last_assistant_message` otherwise. Falls back to raw text if `codex exec` fails. |
 | `user-prompt-submit.sh` | Return lightweight `systemMessage` hint about memory availability. |
 | `SKILL.md` | Memory recall skill with `__INSTALL_DIR__` placeholder (resolved at install time). Includes direct file read fallback for L2 in case `memsearch expand` hits sandbox restrictions. |
-| `install.sh` | One-click installer: checks/installs memsearch, copies skill, generates `hooks.json` with `matcher` field, enables experimental hooks feature flag. |
+| `install.sh` | One-click installer: checks/installs memsearch, copies the skill, installs or updates memsearch hook entries in `hooks.json`, and enables the experimental hooks feature flag. |
 | `parse-rollout.sh` | Parses Codex rollout JSONL files, extracting the last user message through EOF with role labels. |
