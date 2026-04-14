@@ -123,7 +123,9 @@ def cli() -> None:
 @click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True))
 @_common_options
 @click.option("--force", is_flag=True, help="Re-index all files.")
-@click.option("--max-chunk-size", default=None, type=int, help="Max chunk size in characters.")
+@click.option(
+    "--max-chunk-size", default=None, type=click.IntRange(min=1), help="Max chunk size in characters (must be >= 1)."
+)
 @click.option("--description", default=None, help="Collection description (written on creation only).")
 def index(
     paths: tuple[str, ...],
@@ -408,7 +410,9 @@ def _extract_section(
 @click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True))
 @_common_options
 @click.option("--debounce-ms", default=None, type=int, help="Debounce delay in ms.")
-@click.option("--max-chunk-size", default=None, type=int, help="Max chunk size in characters.")
+@click.option(
+    "--max-chunk-size", default=None, type=click.IntRange(min=1), help="Max chunk size in characters (must be >= 1)."
+)
 @click.option("--description", default=None, help="Collection description (written on creation only).")
 def watch(
     paths: tuple[str, ...],
