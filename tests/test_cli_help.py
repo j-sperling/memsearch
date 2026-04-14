@@ -34,3 +34,12 @@ def test_cli_help_and_version_commands(args: list[str], expected_text: str) -> N
 
     assert result.exit_code == 0
     assert expected_text in result.output
+
+
+@pytest.mark.parametrize("args", [["index", "--help"], ["watch", "--help"]])
+def test_chunk_size_flag_appears_in_help(args: list[str]) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, args)
+
+    assert result.exit_code == 0
+    assert "--max-chunk-size" in result.output

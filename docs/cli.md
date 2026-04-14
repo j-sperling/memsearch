@@ -223,6 +223,7 @@ Scan one or more directories (or files) and index all markdown files (`.md`, `.m
 | `--collection` | `-c` | `memsearch_chunks` | Milvus collection name |
 | `--milvus-uri` | | `~/.memsearch/milvus.db` | Milvus connection URI |
 | `--milvus-token` | | *(none)* | Milvus auth token (for server or Zilliz Cloud) |
+| `--max-chunk-size` | | config value | Override `chunking.max_chunk_size` for this run |
 | `--force` | | `false` | Re-embed and re-index all chunks, even if unchanged |
 
 ### Examples
@@ -363,6 +364,7 @@ Start a long-running file watcher that monitors directories for markdown file ch
 | `--collection` | `-c` | `memsearch_chunks` | Milvus collection name |
 | `--milvus-uri` | | `~/.memsearch/milvus.db` | Milvus connection URI |
 | `--milvus-token` | | *(none)* | Milvus auth token |
+| `--max-chunk-size` | | config value | Override `chunking.max_chunk_size` for this run |
 
 ### Examples
 
