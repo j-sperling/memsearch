@@ -4,9 +4,16 @@
 
 set -euo pipefail
 
-# Read stdin JSON into $INPUT
-# Use timeout to prevent indefinite blocking when stdin pipe may not close properly
-INPUT="$(timeout 2 cat 2>/dev/null || echo '{}')"
+# Read stdin JSON into $INPUT unless a detached worker asked us to skip it.
+# Use timeout when available; macOS lacks GNU timeout, so fall back to perl
+# alarm(2) instead of a bare cat that can hang indefinitely.
+if [ "${MEMSEARCH_SKIP_HOOK_STDIN:-}" = "1" ]; then
+  INPUT='{}'
+elif command -v timeout &>/dev/null; then
+  INPUT="$(timeout 2 cat 2>/dev/null || echo '{}')"
+else
+  INPUT="$(perl -e 'alarm 2; local $/; $_ = <STDIN>; print if defined' 2>/dev/null || echo '{}')"
+fi
 
 # Ensure common user bin paths are in PATH (hooks may run in a minimal env)
 for p in "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/bin" "/usr/local/bin"; do
@@ -65,27 +72,52 @@ _json_encode_str() {
   return 0
 }
 
-# --- Project directory (from stdin JSON cwd field, fallback to pwd) ---
+# --- Project directory ---
+#
+# Prefer the git root so hooks and the memory-recall skill converge on the
+# same collection even when Codex is launched from a subdirectory.
+if [ -n "${MEMSEARCH_PROJECT_DIR:-}" ] && [ -d "${MEMSEARCH_PROJECT_DIR:-}" ]; then
+  PROJECT_DIR="$MEMSEARCH_PROJECT_DIR"
+else
+  HOOK_CWD=$(_json_val "$INPUT" "cwd" "$(pwd)")
+  if [ -n "$HOOK_CWD" ] && [ -d "$HOOK_CWD" ]; then
+    PROJECT_DIR="$HOOK_CWD"
+  else
+    PROJECT_DIR="$(pwd)"
+  fi
+fi
 
-PROJECT_DIR=$(_json_val "$INPUT" "cwd" "$(pwd)")
+_GIT_ROOT="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")"
+if [ -n "$_GIT_ROOT" ]; then
+  PROJECT_DIR="$_GIT_ROOT"
+fi
 
 # Memory directory and memsearch state directory are project-scoped
 MEMSEARCH_DIR="${MEMSEARCH_DIR:-${PROJECT_DIR}/.memsearch}"
 MEMORY_DIR="$MEMSEARCH_DIR/memory"
 
-# Find memsearch binary: prefer PATH, fallback to uvx
+# Find memsearch binary: prefer PATH, fallback to uvx.
+# Keep the command as an argv array so the uvx fallback is invoked safely.
 _detect_memsearch() {
-  MEMSEARCH_CMD=""
+  MEMSEARCH_CMD=()
   if command -v memsearch &>/dev/null; then
-    MEMSEARCH_CMD="memsearch"
+    MEMSEARCH_CMD=(memsearch)
   elif command -v uvx &>/dev/null; then
-    MEMSEARCH_CMD="uvx --from memsearch[onnx] memsearch"
+    MEMSEARCH_CMD=(uvx --from "memsearch[onnx]" memsearch)
   fi
 }
 _detect_memsearch
 
-# Short command prefix for injected instructions (falls back to "memsearch" even if unavailable)
-MEMSEARCH_CMD_PREFIX="${MEMSEARCH_CMD:-memsearch}"
+memsearch_available() {
+  [ "${#MEMSEARCH_CMD[@]}" -gt 0 ]
+}
+
+_memsearch() {
+  if ! memsearch_available; then
+    return 127
+  fi
+  "${MEMSEARCH_CMD[@]}" "$@"
+}
 
 # Derive per-project collection name from project directory
 COLLECTION_NAME=$("$(dirname "${BASH_SOURCE[0]}")/../scripts/derive-collection.sh" "$PROJECT_DIR" 2>/dev/null || true)
@@ -100,10 +132,10 @@ COLLECTION_DESC=""
 
 # Helper: run memsearch with arguments, silently fail if not available
 run_memsearch() {
-  if [ -n "$MEMSEARCH_CMD" ] && [ -n "$COLLECTION_NAME" ]; then
-    $MEMSEARCH_CMD "$@" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null || true
-  elif [ -n "$MEMSEARCH_CMD" ]; then
-    $MEMSEARCH_CMD "$@" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null || true
+  if memsearch_available && [ -n "$COLLECTION_NAME" ]; then
+    _memsearch "$@" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null || true
+  elif memsearch_available; then
+    _memsearch "$@" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null || true
   fi
 }
 
@@ -185,7 +217,7 @@ start_watch() {
   if [ "${MEMSEARCH_NO_WATCH:-}" = "1" ]; then
     return 0
   fi
-  if [ -z "$MEMSEARCH_CMD" ]; then
+  if ! memsearch_available; then
     return 0
   fi
   ensure_memory_dir
@@ -194,7 +226,7 @@ start_watch() {
   stop_watch
 
   # Detect Milvus backend from URI
-  local _uri="${MILVUS_URI:-$($MEMSEARCH_CMD config get milvus.uri 2>/dev/null || echo "")}"
+  local _uri="${MILVUS_URI:-$(_memsearch config get milvus.uri 2>/dev/null || echo "")}"
 
   # Lite (local .db): skip watch entirely — file lock prevents concurrent access.
   # Session-start does a one-time index() instead.
@@ -202,14 +234,18 @@ start_watch() {
     return 0
   fi
 
-  # Server (http/tcp): setsid — watch runs persistently for real-time indexing.
-  local launch_prefix="nohup"
-  command -v setsid &>/dev/null && launch_prefix="setsid"
-
   if [ -n "$COLLECTION_NAME" ]; then
-    $launch_prefix $MEMSEARCH_CMD watch "$MEMORY_DIR" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} </dev/null &>/dev/null &
+    if command -v setsid &>/dev/null; then
+      setsid "${MEMSEARCH_CMD[@]}" watch "$MEMORY_DIR" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} </dev/null &>/dev/null &
+    else
+      nohup "${MEMSEARCH_CMD[@]}" watch "$MEMORY_DIR" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} </dev/null &>/dev/null &
+    fi
   else
-    $launch_prefix $MEMSEARCH_CMD watch "$MEMORY_DIR" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} </dev/null &>/dev/null &
+    if command -v setsid &>/dev/null; then
+      setsid "${MEMSEARCH_CMD[@]}" watch "$MEMORY_DIR" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} </dev/null &>/dev/null &
+    else
+      nohup "${MEMSEARCH_CMD[@]}" watch "$MEMORY_DIR" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} </dev/null &>/dev/null &
+    fi
   fi
   echo $! > "$WATCH_PIDFILE"
 }
