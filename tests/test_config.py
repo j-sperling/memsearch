@@ -30,7 +30,7 @@ def test_default_config():
     assert cfg.chunking.max_chunk_size == 1500
     assert cfg.chunking.overlap_lines == 2
     assert cfg.watch.debounce_ms == 1500
-    assert cfg.compact.llm_provider == "openai"
+    assert cfg.compact.llm_model == ""
 
 
 def test_load_toml_file(tmp_path: Path):
@@ -286,51 +286,6 @@ def test_embedding_config_new_fields():
     assert cfg.api_key == ""
 
 
-def test_compact_config_new_fields():
-    """CompactConfig should have base_url and api_key fields with empty defaults."""
-    from memsearch.config import CompactConfig
-
-    cfg = CompactConfig()
-    assert cfg.base_url == ""
-    assert cfg.api_key == ""
-
-
-def test_compact_config_env_ref_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """resolve_config should resolve env: references in compact.api_key and compact.base_url."""
-    monkeypatch.setenv("TEST_LLM_KEY", "sk-llm-from-env")
-
-    cfg_file = tmp_path / "config.toml"
-    save_config(
-        {
-            "compact": {
-                "api_key": "env:TEST_LLM_KEY",
-                "base_url": "https://my-llm-endpoint.com",
-            },
-        },
-        cfg_file,
-    )
-
-    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_file)
-    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
-
-    cfg = resolve_config()
-    assert cfg.compact.api_key == "sk-llm-from-env"
-    assert cfg.compact.base_url == "https://my-llm-endpoint.com"
-
-
-def test_compact_config_set_get_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """set_config_value + get_config_value should work for compact.base_url and compact.api_key."""
-    cfg_path = tmp_path / "config.toml"
-    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_path)
-    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
-
-    set_config_value("compact.base_url", "https://custom-llm.example.com")
-    set_config_value("compact.api_key", "sk-custom-123")
-    cfg = resolve_config()
-    assert get_config_value("compact.base_url", cfg) == "https://custom-llm.example.com"
-    assert get_config_value("compact.api_key", cfg) == "sk-custom-123"
-
-
 def test_dict_to_config_ignores_unknown_fields_and_non_dict_sections() -> None:
     """_dict_to_config should ignore garbage sections/fields instead of crashing."""
     cfg = _dict_to_config(
@@ -342,8 +297,7 @@ def test_dict_to_config_ignores_unknown_fields_and_non_dict_sections() -> None:
             },
             "milvus": "not-a-dict",
             "compact": {
-                "llm_provider": "anthropic",
-                "llm_model": "claude-3-7-sonnet",
+                "llm_model": "gemini-3.1-pro-preview",
                 "extra": True,
             },
             "unknown_section": {"foo": "bar"},
@@ -353,8 +307,7 @@ def test_dict_to_config_ignores_unknown_fields_and_non_dict_sections() -> None:
     assert cfg.embedding.provider == "google"
     assert cfg.embedding.batch_size == 64
     assert cfg.milvus.uri == "~/.memsearch/milvus.db"
-    assert cfg.compact.llm_provider == "anthropic"
-    assert cfg.compact.llm_model == "claude-3-7-sonnet"
+    assert cfg.compact.llm_model == "gemini-3.1-pro-preview"
 
 
 def test_dict_to_config_accepts_empty_section_dicts() -> None:

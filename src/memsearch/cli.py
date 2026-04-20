@@ -52,11 +52,8 @@ _PARAM_MAP = {
     "collection": "milvus.collection",
     "milvus_uri": "milvus.uri",
     "milvus_token": "milvus.token",
-    "llm_provider": "compact.llm_provider",
     "llm_model": "compact.llm_model",
     "prompt_file": "compact.prompt_file",
-    "llm_base_url": "compact.base_url",
-    "llm_api_key": "compact.api_key",
     "max_chunk_size": "chunking.max_chunk_size",
     "overlap_lines": "chunking.overlap_lines",
     "debounce_ms": "watch.debounce_ms",
@@ -511,20 +508,14 @@ def watch(
 @click.option(
     "--output-dir", "-o", default=None, type=click.Path(), help="Directory to write the compact summary into."
 )
-@click.option("--llm-provider", default=None, help="LLM for summarization.")
-@click.option("--llm-model", default=None, help="Override LLM model.")
-@click.option("--llm-base-url", default=None, help="OpenAI-compatible base URL for the LLM.")
-@click.option("--llm-api-key", default=None, help="API key for the LLM provider.")
+@click.option("--llm-model", default=None, help="Override LLM model (single model id; skips fallback chain).")
 @click.option("--prompt", default=None, help="Custom prompt template (must contain {chunks}).")
 @click.option("--prompt-file", default=None, type=click.Path(exists=True), help="Read prompt template from file.")
 @_common_options
 def compact(
     source: str | None,
     output_dir: str | None,
-    llm_provider: str | None,
     llm_model: str | None,
-    llm_base_url: str | None,
-    llm_api_key: str | None,
     prompt: str | None,
     prompt_file: str | None,
     provider: str | None,
@@ -549,11 +540,8 @@ def compact(
             collection=collection,
             milvus_uri=milvus_uri,
             milvus_token=milvus_token,
-            llm_provider=llm_provider,
             llm_model=llm_model,
             prompt_file=prompt_file,
-            llm_base_url=llm_base_url,
-            llm_api_key=llm_api_key,
         )
     )
 
@@ -569,12 +557,9 @@ def compact(
         summary = _run(
             ms.compact(
                 source=normalized_source,
-                llm_provider=cfg.compact.llm_provider,
                 llm_model=cfg.compact.llm_model or None,
                 prompt_template=prompt_template,
                 output_dir=output_dir,
-                llm_base_url=cfg.compact.base_url or None,
-                llm_api_key=cfg.compact.api_key or None,
             )
         )
         if summary:
@@ -764,21 +749,10 @@ def config_init(project: bool) -> None:
 
     # Compact
     click.echo("\n── Compact ──")
-    _compact_defaults = {
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-sonnet-4-5-20250929",
-        "gemini": "gemini-2.0-flash",
-    }
     result["compact"] = {}
-    result["compact"]["llm_provider"] = click.prompt(
-        "  LLM provider (openai/anthropic/gemini)",
-        default=current.compact.llm_provider,
-    )
-    _compact_provider = result["compact"]["llm_provider"]
-    _compact_model_default = current.compact.llm_model or _compact_defaults.get(_compact_provider, "")
     result["compact"]["llm_model"] = click.prompt(
-        "  LLM model",
-        default=_compact_model_default,
+        "  LLM model (empty for default fallback chain: gpt-5.4 → gemini-3.1-pro-preview)",
+        default=current.compact.llm_model,
     )
     result["compact"]["prompt_file"] = click.prompt(
         "  Prompt file path (empty for built-in)",

@@ -47,11 +47,8 @@ class EmbeddingConfig:
 
 @dataclass
 class CompactConfig:
-    llm_provider: str = "openai"
-    llm_model: str = ""
+    llm_model: str = ""  # empty = use compact.DEFAULT_MODELS fallback chain
     prompt_file: str = ""
-    base_url: str = ""  # OpenAI-compatible endpoint URL
-    api_key: str = ""  # API key (supports "env:VAR_NAME" syntax)
 
 
 @dataclass

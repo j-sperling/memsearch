@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from memsearch import compact as compact_module
@@ -11,78 +13,73 @@ async def test_compact_chunks_returns_empty_string_for_empty_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compact_chunks_dispatches_to_openai(monkeypatch) -> None:
-    captured: dict[str, str | None] = {}
+async def test_compact_chunks_runs_agent_with_default_chain(monkeypatch) -> None:
+    captured: dict[str, object] = {}
 
-    async def fake_openai(prompt: str, model: str, *, base_url: str | None = None, api_key: str | None = None) -> str:
-        captured["prompt"] = prompt
-        captured["model"] = model
-        captured["base_url"] = base_url
-        captured["api_key"] = api_key
-        return "openai-summary"
+    @dataclass
+    class _FakeResult:
+        output: str
 
-    monkeypatch.setattr(compact_module, "_compact_openai", fake_openai)
+    class _FakeAgent:
+        def __init__(self, model):
+            captured["model"] = model
+
+        async def run(self, prompt):
+            captured["prompt"] = prompt
+            return _FakeResult(output="agent-summary")
+
+    monkeypatch.setattr(compact_module, "Agent", _FakeAgent)
+
+    def fake_chain(names):
+        captured["fallback_names"] = tuple(names)
+        return "fake-fallback-model"
+
+    monkeypatch.setattr(compact_module, "_build_fallback_chain", fake_chain)
 
     result = await compact_module.compact_chunks(
         [{"content": "alpha"}, {"content": "beta"}],
-        llm_provider="openai",
-        model="gpt-test",
-        base_url="https://example.invalid/v1",
-        api_key="env:OPENAI_API_KEY",
     )
 
-    assert result == "openai-summary"
-    assert captured == {
-        "prompt": compact_module.COMPACT_PROMPT.format(chunks="alpha\n\n---\n\nbeta"),
-        "model": "gpt-test",
-        "base_url": "https://example.invalid/v1",
-        "api_key": "env:OPENAI_API_KEY",
-    }
+    assert result == "agent-summary"
+    assert captured["model"] == "fake-fallback-model"
+    assert captured["fallback_names"] == compact_module.DEFAULT_MODELS
+    assert captured["prompt"] == compact_module.COMPACT_PROMPT.format(chunks="alpha\n\n---\n\nbeta")
 
 
 @pytest.mark.asyncio
-async def test_compact_chunks_dispatches_to_anthropic(monkeypatch) -> None:
-    captured: dict[str, str] = {}
+async def test_compact_chunks_uses_single_model_override(monkeypatch) -> None:
+    captured: dict[str, object] = {}
 
-    async def fake_anthropic(prompt: str, model: str) -> str:
-        captured["prompt"] = prompt
-        captured["model"] = model
-        return "anthropic-summary"
+    @dataclass
+    class _FakeResult:
+        output: str
 
-    monkeypatch.setattr(compact_module, "_compact_anthropic", fake_anthropic)
+    class _FakeAgent:
+        def __init__(self, model):
+            captured["model"] = model
 
-    result = await compact_module.compact_chunks(
-        [{"content": "memory chunk"}],
-        llm_provider="anthropic",
-    )
+        async def run(self, prompt):
+            captured["prompt"] = prompt
+            return _FakeResult(output="single-summary")
 
-    assert result == "anthropic-summary"
-    assert captured["model"] == "claude-sonnet-4-5-20250929"
-    assert "memory chunk" in captured["prompt"]
+    monkeypatch.setattr(compact_module, "Agent", _FakeAgent)
 
+    def fake_single(name):
+        captured["single_name"] = name
+        return f"built:{name}"
 
-@pytest.mark.asyncio
-async def test_compact_chunks_dispatches_to_gemini(monkeypatch) -> None:
-    captured: dict[str, str] = {}
-
-    async def fake_gemini(prompt: str, model: str) -> str:
-        captured["prompt"] = prompt
-        captured["model"] = model
-        return "gemini-summary"
-
-    monkeypatch.setattr(compact_module, "_compact_gemini", fake_gemini)
+    monkeypatch.setattr(compact_module, "_build_single_model", fake_single)
 
     result = await compact_module.compact_chunks(
         [{"content": "memory chunk"}],
-        llm_provider="gemini",
+        model="gpt-5.4",
         prompt_template="Summarize:\n{chunks}",
     )
 
-    assert result == "gemini-summary"
-    assert captured == {
-        "prompt": "Summarize:\nmemory chunk",
-        "model": "gemini-2.0-flash",
-    }
+    assert result == "single-summary"
+    assert captured["model"] == "built:gpt-5.4"
+    assert captured["single_name"] == "gpt-5.4"
+    assert captured["prompt"] == "Summarize:\nmemory chunk"
 
 
 @pytest.mark.asyncio
@@ -94,7 +91,21 @@ async def test_compact_chunks_rejects_prompt_without_chunks_placeholder() -> Non
         )
 
 
-@pytest.mark.asyncio
-async def test_compact_chunks_rejects_unknown_provider() -> None:
-    with pytest.raises(ValueError, match="Unknown LLM provider"):
-        await compact_module.compact_chunks([{"content": "x"}], llm_provider="unknown")
+def test_build_single_model_routes_gemini_to_google(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeGoogle:
+        def __init__(self, name):
+            captured["google"] = name
+
+    class _FakeOpenAI:
+        def __init__(self, name):
+            captured["openai"] = name
+
+    monkeypatch.setattr(compact_module, "GoogleModel", _FakeGoogle)
+    monkeypatch.setattr(compact_module, "OpenAIResponsesModel", _FakeOpenAI)
+
+    compact_module._build_single_model("gemini-3.1-pro-preview")
+    compact_module._build_single_model("gpt-5.4")
+
+    assert captured == {"google": "gemini-3.1-pro-preview", "openai": "gpt-5.4"}
