@@ -1,11 +1,17 @@
-"""Milvus vector storage layer using MilvusClient API."""
+"""Vector storage layer.
+
+Defines the :class:`Store` protocol — the minimal surface every backend
+must expose — and the Milvus implementation (:class:`MilvusStore`).
+Alternative backends (e.g. Cloudflare Agent Memory) live in sibling
+modules and are selected by URI scheme in ``memsearch.core``.
+"""
 
 from __future__ import annotations
 
 import logging
 import sys
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +19,44 @@ logger = logging.getLogger(__name__)
 def _escape_filter_value(value: str) -> str:
     """Escape backslashes and double quotes for Milvus filter expressions."""
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+@runtime_checkable
+class Store(Protocol):
+    """Minimal interface every chunk-storage backend must satisfy.
+
+    Methods mirror the subset of :class:`MilvusStore` actually called
+    from the rest of the codebase (``core.py``, ``cli.py``). New
+    backends conform structurally — no explicit subclassing required,
+    though :class:`MilvusStore` is declared as ``Store`` for clarity.
+    """
+
+    def upsert(self, chunks: list[dict[str, Any]]) -> int: ...
+
+    def search(
+        self,
+        query_embedding: list[float],
+        *,
+        query_text: str = "",
+        top_k: int = 10,
+        filter_expr: str = "",
+    ) -> list[dict[str, Any]]: ...
+
+    def query(self, *, filter_expr: str = "") -> list[dict[str, Any]]: ...
+
+    def hashes_by_source(self, source: str) -> set[str]: ...
+
+    def indexed_sources(self) -> set[str]: ...
+
+    def delete_by_source(self, source: str) -> None: ...
+
+    def delete_by_hashes(self, hashes: list[str]) -> None: ...
+
+    def count(self) -> int: ...
+
+    def drop(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class MilvusStore:

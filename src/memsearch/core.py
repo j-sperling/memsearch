@@ -16,9 +16,43 @@ from .chunker import Chunk, chunk_markdown, clean_content_for_embedding, compute
 from .compact import compact_chunks
 from .embeddings import EmbeddingProvider, get_provider
 from .scanner import ScannedFile, scan_paths
-from .store import MilvusStore
+from .store import MilvusStore, Store
 
 logger = logging.getLogger(__name__)
+
+
+def _build_store(
+    uri: str,
+    *,
+    token: str | None,
+    collection: str,
+    dimension: int | None,
+    description: str,
+) -> Store:
+    """Dispatch to the backend implementation keyed off the URI scheme.
+
+    ``agentmem://`` selects the Cloudflare Agent Memory stub; anything
+    else (``http(s)://``, ``tcp://``, bare paths, ``milvus://``) falls
+    through to :class:`MilvusStore`.
+    """
+    scheme = uri.split("://", 1)[0].lower() if "://" in uri else ""
+    if scheme == "agentmem":
+        from .agent_memory_store import AgentMemoryStore
+
+        return AgentMemoryStore(
+            uri=uri,
+            token=token,
+            collection=collection,
+            dimension=dimension,
+            description=description,
+        )
+    return MilvusStore(
+        uri=uri,
+        token=token,
+        collection=collection,
+        dimension=dimension,
+        description=description,
+    )
 
 
 class MemSearch:
@@ -71,7 +105,7 @@ class MemSearch:
             base_url=embedding_base_url,
             api_key=embedding_api_key,
         )
-        self._store = MilvusStore(
+        self._store: Store = _build_store(
             uri=milvus_uri,
             token=milvus_token,
             collection=collection,
@@ -386,7 +420,7 @@ class MemSearch:
     # ------------------------------------------------------------------
 
     @property
-    def store(self) -> MilvusStore:
+    def store(self) -> Store:
         return self._store
 
     def close(self) -> None:
