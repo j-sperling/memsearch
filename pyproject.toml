@@ -36,7 +36,9 @@ ollama = [
 ]
 local = [
     "einops>=0.8.2",
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=5.6.0",
+    "torch>=2.12.1",
+    "transformers>=5.3.0",
 ]
 anthropic = ["anthropic>=0.40"]
 onnx = [
