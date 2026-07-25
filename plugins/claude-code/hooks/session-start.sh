@@ -128,7 +128,7 @@ PROJECT_BASENAME=$(basename "${CLAUDE_PROJECT_DIR:-.}")
 COLLECTION_DESC="${PROJECT_BASENAME} | ${PROVIDER}/${MODEL:-default}"
 
 _recent_memory_preview() {
-  local file="$1" max_lines="${2:-40}"
+  local file="$1" max_lines="${2:-40}" max_bytes="${3:-6000}"
   awk '
     function flush_section() {
       if (section_len > 0 && has_body) {
@@ -161,7 +161,29 @@ _recent_memory_preview() {
     END {
       flush_section()
     }
-  ' "$file" 2>/dev/null | tail -n "$max_lines" || true
+  ' "$file" 2>/dev/null | tail -n "$max_lines" | _cap_bytes "$max_bytes" || true
+}
+
+# Bound the injected preview by BYTES, not just lines.
+#
+# A line cap alone does not bound context cost: these previews are LLM-written
+# prose bullets averaging ~165 bytes, so 40 lines from each of the two newest
+# files produced a ~13 KB SessionStart injection (measured p50 13,294 B across 49
+# captured sessions, p90 15,090 B). Tokens track bytes, not line count, so the
+# line cap has to be paired with a byte ceiling.
+#
+# Cuts on a line boundary so a bullet is never emitted half-written.
+_cap_bytes() {
+  local max_bytes="${1:-6000}" total=0 line_bytes
+  while IFS= read -r line; do
+    line_bytes=$(( ${#line} + 1 ))
+    if (( total + line_bytes > max_bytes )); then
+      printf '%s\n' "- _(older entries trimmed to stay within the session context budget)_"
+      return 0
+    fi
+    total=$(( total + line_bytes ))
+    printf '%s\n' "$line"
+  done
 }
 
 # The session heading is written lazily by stop.sh on the first
@@ -220,14 +242,21 @@ recent_files=$(find "$MEMORY_DIR" -maxdepth 1 -type f -name "$DAILY_JOURNAL_PATT
 
 if [ -n "$recent_files" ]; then
   context="# Recent Memory\n\n"
+  # Total byte budget for the whole block, spent newest-file-first, rather than a
+  # per-file cap. Measured 2026-07-24: an unbounded line-only cap produced a p50
+  # 13,294 B injection (p90 15,090 B) across 49 sessions, which is roughly 3,300
+  # tokens every session before any work begins.
+  remaining_bytes="${MEMSEARCH_SESSION_CONTEXT_BUDGET:-6000}"
   while IFS= read -r f; do
     [ -z "$f" ] && continue
+    (( remaining_bytes <= 0 )) && break
     basename_f=$(basename "$f")
     # Extract recent non-empty session sections. Legacy journals may contain
     # empty headings, but they do not carry useful context.
-    content=$(_recent_memory_preview "$f" 40)
+    content=$(_recent_memory_preview "$f" 40 "$remaining_bytes")
     if [ -n "$content" ]; then
       context+="## $basename_f\n$content\n\n"
+      remaining_bytes=$(( remaining_bytes - ${#content} ))
     fi
   done <<< "$recent_files"
 fi
