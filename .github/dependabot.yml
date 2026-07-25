@@ -1,0 +1,40 @@
+version: 2
+
+# Added 2026-07-24 after a coverage audit: this repo was outside Dependabot while
+# the local scanner was carrying it. That is how it accumulated 96 known
+# vulnerabilities across 17 packages before anyone looked.
+#
+# Grouped weekly so routine bumps arrive as one PR; security updates stay
+# individual.
+#
+# Known upstream caveat: Dependabot's uv ecosystem updates pyproject.toml but does
+# not always re-sync uv.lock (dependabot-core #12788, #13912). Re-run `uv lock`
+# on the PR branch if the lockfile drifts.
+
+updates:
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    groups:
+      python-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci
+    groups:
+      actions:
+        patterns:
+          - "*"
