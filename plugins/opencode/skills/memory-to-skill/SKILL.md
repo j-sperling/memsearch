@@ -24,18 +24,25 @@ in the same turn after explicit approval; match the requested stage.
 
 ## A. Capture what you just did (0→1→2)
 
-You already have the context, so **draft the skill yourself** — do not call the
-background distiller for this. Write a SKILL.md **body** (markdown, no
+Use the live conversation to **draft the skill yourself**; do not call the
+background distiller for current-session capture. If running without parent
+history, obtain an explicit evidence bundle or transcript locator first. Do not
+infer unseen work from a task title or summary. Write a SKILL.md **body** (markdown, no
 frontmatter): imperative numbered steps for the recurring task, concrete commands
 and paths, no secrets, self-contained.
 
 **Be exact — do not guess.** You have the live session for what you just did, so use the real commands, paths, and output, not approximations. If a detail is uncertain, verify it (re-read the relevant files or the transcript) or keep that step general — a wrong command is worse than a vague one. Then persist it as a candidate:
 
 ```bash
-printf '%s' "## <title>\n\n1. ...\n2. ..." | memsearch skills add \
+memsearch skills add \
   --name "<short-slug>" \
   --description "<what it does AND when it should trigger — lead with the verbs a user types>" \
-  --body-file -
+  --body-file - <<'SKILL_BODY'
+## <title>
+
+1. ...
+2. ...
+SKILL_BODY
 ```
 
 `add` handles slugging, standard frontmatter, meta.json, and the git commit — no

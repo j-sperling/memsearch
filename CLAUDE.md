@@ -3,7 +3,7 @@
 <!-- This file is for AI agents (Claude Code, Cursor, Copilot, etc.) working in this repository.
      It also serves as a shared project memory — recording conventions, architecture decisions,
      and common patterns that all contributors (human or AI) should follow.
-     Symlinked as AGENT.md and MEMORY.md for compatibility with other tools. -->
+     Symlinked as AGENTS.md, AGENT.md and MEMORY.md for compatibility with other tools. -->
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -58,7 +58,7 @@ Markdown files → Scanner → Chunker → Embedder → MilvusStore
 
 The plugin is a first-class component of memsearch — it's the primary real-world application that demonstrates the library in action. It gives Claude Code automatic persistent memory across sessions with zero user intervention.
 
-**Architecture: 4 shell hooks + 1 skill + 1 background watcher**
+**Architecture: 4 shell hooks + 3 skills + 1 background watcher**
 
 ```
 plugins/claude-code/
@@ -73,8 +73,9 @@ plugins/claude-code/
 │   └── derive-collection.sh     # Derive per-project collection name from project path
 ├── transcript.py                # JSONL transcript parser for Claude Code conversation files (L3 deep drill)
 └── skills/
-    └── memory-recall/
-        └── SKILL.md             # Skill (context: fork): search → expand → transcript in subagent
+    ├── memory-recall/SKILL.md    # Forked historical retrieval
+    ├── memory-to-skill/SKILL.md  # Inline current-session capture or explicit evidence
+    └── memory-config/SKILL.md    # Configuration
 ```
 
 **Key design: skill-based memory recall.** Memory retrieval is handled by a `memory-recall` skill that runs in a forked subagent context (`context: fork`). Claude automatically invokes the skill when it judges the user's question could benefit from historical context. The subagent autonomously performs search, evaluates relevance, expands promising results, and returns a curated summary — all without polluting the main conversation context.
@@ -119,7 +120,11 @@ When modifying hooks/skills, keep in mind:
 | **OpenCode plugin** | `plugins/opencode/package.json` | npm (`@zilliz/memsearch-opencode`) |
 | **Codex CLI plugin** | *(none)* | `install.sh` (no version management) |
 
-See `CLAUDE.local.md` for detailed release procedures, current versions, and operational details.
+Read `.github/workflows/release.yml` for the automated release contract and the
+version files above for current versions. Verify the actual named remotes before
+any publish; a local source change does not authorize a release. This excluded
+fork retains upstream `CLAUDE.md` ownership; `AGENTS.md` is its deliberate
+cross-harness discovery adapter, outside the shared compiler.
 
 ## Project Conventions
 
