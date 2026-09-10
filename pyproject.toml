@@ -21,7 +21,7 @@ dependencies = [
     "click>=8.1",
     "watchdog>=4.0",
     "pathspec>=0.12",
-    "setuptools>=78.1.1,<81",
+    "setuptools>=83",
     "tomli_w>=1.0",
     "tomli>=2.0; python_version < '3.11'",
     "openai>=1.0",
@@ -37,7 +37,9 @@ ollama = [
 ]
 local = [
     "einops>=0.8.2",
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=5.6.0",
+    "torch>=2.12.1",
+    "transformers>=5.3.0",
 ]
 anthropic = ["anthropic>=0.40"]
 onnx = [

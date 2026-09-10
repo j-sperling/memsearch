@@ -132,3 +132,7 @@ cross-harness discovery adapter, outside the shared compiler.
 - Optional deps via extras: `[google]`, `[voyage]`, `[ollama]`, `[local]`, `[onnx]`, `[all]`. The Claude Code plugin uses `memsearch[onnx]` for zero-config ONNX embedding.
 - Docs at `docs/` use mkdocs-material. The `site/` directory is build output — do not commit.
 - Always use `uv run python -m pytest` instead of `uv run pytest` to avoid system Python pytest conflicts.
+
+- Keep CLI, Python API, and plugin behavior aligned when changing shared memory semantics.
+- Avoid unattended runtime paths that install or upgrade tools dynamically.
+- Update docs when plugin commands, config keys, or install paths change.
