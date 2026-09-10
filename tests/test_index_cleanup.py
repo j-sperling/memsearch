@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from watchdog.observers.polling import PollingObserver
 
 from memsearch.core import MemSearch
 
@@ -174,7 +175,11 @@ async def test_enabling_ignore_rules_removes_previously_indexed_sources(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_initial_index_and_live_watch_share_ignore_policy(tmp_path: Path) -> None:
+async def test_initial_index_and_live_watch_share_ignore_policy(tmp_path: Path, monkeypatch) -> None:
+    # This tests shared ignore policy with real filesystem observation. Native
+    # backend delivery is covered separately in test_watcher; macOS startup
+    # batching must not decide whether the policy integration passes.
+    monkeypatch.setattr("memsearch.watcher.Observer", lambda: PollingObserver(timeout=0.05))
     docs = tmp_path / "docs"
     write_note(docs / ".gitignore", "ignored*.md\n")
     existing_included = write_note(docs / "included.md", "# Included\n\nalpha\n")
@@ -190,7 +195,11 @@ async def test_initial_index_and_live_watch_share_ignore_policy(tmp_path: Path) 
     try:
         live_included = write_note(docs / "live.md", "# Live\n\ncharlie\n")
         live_ignored = write_note(docs / "ignored-live.md", "# Ignored Live\n\ndelta\n")
-        await asyncio.sleep(0.5)
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while str(live_included) not in store.indexed_sources():
+            if asyncio.get_running_loop().time() >= deadline:
+                pytest.fail("Watcher did not index the included file within 5 seconds")
+            await asyncio.sleep(0.05)
     finally:
         watcher.stop()
 

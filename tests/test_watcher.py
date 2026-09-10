@@ -1,5 +1,6 @@
 """Tests for the file watcher module."""
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -282,9 +283,11 @@ class TestFileWatcher:
     def test_callback_received_via_watchdog_integration(self, tmp_path: Path):
         """Integration-style: use a real Observer + Handler to verify end-to-end."""
         received = []
+        delivered = threading.Event()
 
         def callback(ev_type, path):
             received.append((ev_type, path))
+            delivered.set()
 
         w = FileWatcher([tmp_path], callback, debounce_ms=50)
         w.start()
@@ -293,9 +296,9 @@ class TestFileWatcher:
             # Create a markdown file
             md_file = tmp_path / "hello.md"
             md_file.write_text("# Hello")
-            import time
-
-            time.sleep(0.3)  # let watchdog detect + debounce fire
+            # Native event batching differs by platform; wait for the observed
+            # callback instead of assuming delivery within a fixed sleep.
+            assert delivered.wait(5.0), "Watcher did not deliver a callback within 5 seconds"
         finally:
             w.stop()
 
